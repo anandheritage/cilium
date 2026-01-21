@@ -1697,6 +1697,9 @@ int cil_to_host(struct __ctx_buff *ctx)
 		magic = ctx->mark;
 #endif
 
+	if ((ctx->mark & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_IDENTITY)
+		src_id = get_identity(ctx);
+
 	if ((magic & 0xFFFF) == MARK_MAGIC_TO_PROXY) {
 		/* Upper 16 bits may carry proxy port number */
 		__be16 port = magic >> 16;

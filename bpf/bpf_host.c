@@ -1690,6 +1690,8 @@ int cil_to_host(struct __ctx_buff *ctx)
 	 */
 	if ((ctx->mark & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_TO_PROXY)
 		magic = ctx->mark;
+	else if ((ctx->mark & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_IDENTITY)
+		src_id = get_identity(ctx);
 #ifdef ENABLE_IPSEC
 	else if (ctx_is_encrypt(ctx))
 		magic = ctx->mark;

@@ -1692,6 +1692,10 @@ int cil_to_host(struct __ctx_buff *ctx)
 		magic = ctx->mark;
 	else if ((ctx->mark & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_IDENTITY)
 		src_id = get_identity(ctx);
+#if defined(ENABLE_WIREGUARD) && defined(ENABLE_IDENTITY_MARK)
+	else if (ctx_is_decrypt(ctx))
+		src_id = get_identity(ctx);
+#endif
 #ifdef ENABLE_IPSEC
 	else if (ctx_is_encrypt(ctx))
 		magic = ctx->mark;

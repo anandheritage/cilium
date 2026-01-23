@@ -13,7 +13,9 @@ import (
 
 	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 	"github.com/cilium/cilium/pkg/datapath/tables"
+	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	"github.com/cilium/cilium/pkg/datapath/types"
+	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 )
@@ -172,6 +174,57 @@ func haveIPv6MaxSize() bool {
 	return false
 }
 
+// Probes whether the kernel supports BIG TCP for VXLAN and GENEVE.
+func supportsBIGTCPTunnel(log *slog.Logger, port uint16) bool {
+	dev := &netlink.Geneve{
+		LinkAttrs: netlink.LinkAttrs{
+			Name: defaults.ProbeTunnelDevice,
+		},
+		Dport: port,
+	}
+
+	if err := netlink.LinkAdd(dev); err != nil {
+		log.Warn("Failed to probe kernel support for BIG TCP for UDP tunnels: failed to create a probe GENEVE device",
+			logfields.Error, err,
+		)
+		return false
+	}
+
+	link, err := safenetlink.LinkByName(defaults.ProbeTunnelDevice)
+	if err != nil {
+		log.Warn("Failed to probe kernel support for BIG TCP for UDP tunnels: failed to fetch the probe GENEVE device",
+			logfields.Error, err,
+		)
+		return false
+	}
+
+	// (Pending) Kernel commit XXXXXXXXXXXX ("geneve: Enable BIG TCP packets").
+	//
+	// VXLAN tunnels are less suitable as a probe, because they may call
+	// netif_inherit_tso_max() and inherit tso_max_size from the physical
+	// device, which is likely to be bigger than 64k, even before the kernel
+	// support for BIG TCP for VXLAN has been added. Setting gso_max_size
+	// to a bigger value on such kernels doesn't make it work, but leads to
+	// packet drops instead.
+	//
+	// GENEVE, on the other hand, doesn't do netif_inherit_tso_max(), so we
+	// can reliably check its tso_max_size (65536 meaning pre BIG TCP
+	// support; 524280 meaning post BIG TCP support).
+	support := link.Attrs().TSOMaxSize > defaultGSOMaxSize
+
+	if err := netlink.LinkDel(link); err != nil {
+		log.Warn("Failed to remove the probe GENEVE device",
+			logfields.Error, err,
+		)
+	}
+
+	log.Info("Probed kernel support for BIG TCP for UDP tunnels",
+		logfields.State, support,
+	)
+
+	return support
+}
+
 func probeTSOMaxSize(log *slog.Logger, devices []string) int {
 	maxSize := min(bigTCPGSOMaxSize, bigTCPGROMaxSize)
 	for _, device := range devices {
@@ -199,13 +252,14 @@ type params struct {
 	DaemonConfig *option.DaemonConfig
 	UserConfig   types.BigTCPUserConfig
 	IPsecConfig  types.IPsecConfig
+	TunnelConfig tunnel.Config
 	DB           *statedb.DB
 	Devices      statedb.Table[*tables.Device]
 }
 
-func validateConfig(cfg types.BigTCPUserConfig, daemonCfg *option.DaemonConfig, ipsecCfg types.IPsecConfig) error {
+func validateConfig(cfg types.BigTCPUserConfig, daemonCfg *option.DaemonConfig, ipsecCfg types.IPsecConfig, bigtcpTunnel bool) error {
 	if cfg.EnableIPv6BIGTCP || cfg.EnableIPv4BIGTCP {
-		if daemonCfg.TunnelingEnabled() && !cfg.EnableTunnelBIGTCP {
+		if daemonCfg.TunnelingEnabled() && !bigtcpTunnel {
 			return errors.New("BIG TCP in tunneling mode requires pending kernel support and needs to be enabled by enable-tunnel-big-tcp")
 		}
 		if ipsecCfg.Enabled() {
@@ -219,7 +273,8 @@ func validateConfig(cfg types.BigTCPUserConfig, daemonCfg *option.DaemonConfig, 
 }
 
 func newBIGTCP(lc cell.Lifecycle, p params) (*Configuration, error) {
-	if err := validateConfig(p.UserConfig, p.DaemonConfig, p.IPsecConfig); err != nil {
+	bigtcpTunnel := supportsBIGTCPTunnel(p.Log, p.TunnelConfig.Port()+1)
+	if err := validateConfig(p.UserConfig, p.DaemonConfig, p.IPsecConfig, bigtcpTunnel); err != nil {
 		return nil, err
 	}
 	cfg := newDefaultConfiguration(p.UserConfig)
